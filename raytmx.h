@@ -516,6 +516,65 @@ RAYTMX_DEC bool CheckCollisionTMXTileLayersRec(const TmxMap* map, const TmxLayer
     Rectangle rec, TmxObject* outputObject);
 
 /**
+ * @brief Check rectangle collisions against multiple TMX tile layers and collect all hit objects.
+ *
+ * Tests the given axis-aligned rectangle against all tile layers provided and reports every
+ * TMX object whose bounds intersect the rectangle.
+ *
+ * @param map A loaded map model containing the given layers.
+ * @param layers An array of select tile or group layers to be checked for collisions.
+ * @param layersLength Length of the given array of layers.
+ * @param rec The rectangle to perform collision checks on.
+ * @param outputObjects Optional pointer to a pre-allocated array that will be filled with
+ *                      the objects that intersect the rectangle. If non-NULL, it must point
+ *                      to an array with space for at least maxOutput entries.
+ * @param outputCount Optional pointer to a uint32_t that will be set to the number of objects
+ *                    written into outputObjects (or the total number of hits if outputObjects
+ *                    is NULL or maxOutput is too small). If NULL, the count is not returned.
+ * @param maxOutput Maximum number of objects to write into outputObjects. If zero, no objects
+ *                  are written; the function may still report the presence of collisions via
+ *                  the return value and/or outputCount.
+ *
+ * @return true if one or more objects intersect the rectangle, false otherwise.
+ *
+ * @notes
+ * - The function does not modify the map or layers data.
+ * - If more collisions are found than maxOutput, only the first maxOutput objects are written
+ *   to outputObjects, but the return value will still be true and outputCount (if provided)
+ *   will reflect the total number of collisions found (not limited by maxOutput).
+ * - Caller is responsible for providing a sufficiently sized outputObjects buffer (if used).
+ * - Behavior is undefined if map or layers pointers are invalid.
+ */
+RAYTMX_DEC bool CheckCollisionTMXTileLayersRecAll(const TmxMap* map, const TmxLayer* layers,
+    uint32_t layersLength, Rectangle rec, TmxObject* outputObjects, uint32_t* outputCount, uint32_t maxOutput);
+
+/**
+ * @brief Allocate and return an array of all TMX objects that intersect a rectangle.
+ *
+ * Tests the given axis-aligned rectangle against all provided tile layers, allocates an array
+ * containing every TmxObject that intersects the rectangle, and returns that array to the caller.
+ *
+ * @param map A loaded map model containing the given layers.
+ * @param layers An array of select tile or group layers to be checked for collisions.
+ * @param layersLength Length of the given array of layers.
+ * @param rec The rectangle to perform collision checks on.
+ * @param outCount Pointer to a uint32_t that will be set to the number of objects returned.
+ *                 Must not be NULL.
+ *
+ * @return Pointer to a newly allocated array of TmxObject entries containing every hit.
+ *         The caller is responsible for freeing the returned array using free().
+ *         Returns NULL and sets *outCount to 0 if no collisions were found or if allocation fails.
+ *
+ * @notes
+ * - The returned array is owned by the caller and must be freed when no longer needed.
+ * - The function does not modify the map or layers data.
+ * - If allocation fails, the function returns NULL and *outCount is set to 0.
+ * - Behavior is undefined if map or layers pointers are invalid.
+ */
+RAYTMX_DEC TmxObject* CheckCollisionTMXTileLayersRecAllAlloc(const TmxMap* map, const TmxLayer* layers,
+    uint32_t layersLength, Rectangle rec, uint32_t* outCount);
+
+/**
  * Check for collisions between the given tile or group layers and the given circle. The tiles must have collision
  * information created with the Tiled Collision Editor.
  * Note: This function assumes the map is positioned at (0, 0). If the map is drawn with an offset, normalize.
@@ -855,6 +914,10 @@ void DrawTMXObjectGroup(const TmxMap* map, Rectangle screenRect, TmxLayer layer,
 void DrawTMXImageLayer(const TmxMap* map, Rectangle screenRect, TmxLayer layer, int posX, int posY, Color tint);
 bool CheckCollisionTMXTileLayerObject(const TmxMap* map, const TmxLayer* layers, uint32_t layersLength,
     TmxObject object, TmxObject* outputObject);
+bool CheckCollisionTMXTileLayerObjectAll(const TmxMap* map, const TmxLayer* layers,
+    uint32_t layersLength, TmxObject object, TmxObject* outputObjects, uint32_t* outputCount, uint32_t maxOutput);
+TmxObject* CheckCollisionTMXTileLayerObjectAllAlloc(const TmxMap* map, const TmxLayer* layers,
+    uint32_t layersLength, TmxObject object, uint32_t* outCount);
 bool CheckCollisionTMXObjectGroupObject(TmxObjectGroup group, TmxObject object, TmxObject* outputObject);
 void TraceLogTMXTilesets(int logLevel, TmxOrientation orientation, TmxTileset* tilesets, uint32_t tilesetsLength,
     int numSpaces);
@@ -1193,6 +1256,23 @@ RAYTMX_DEC bool CheckCollisionTMXTileLayersRec(const TmxMap* map, const TmxLayer
 
     /* Check the rectangle against objects associated with tiles in the layers for collisions */
     return CheckCollisionTMXTileLayerObject(map, layers, layersLength, CreateRectangularTMXObject(rec), outputObject);
+}
+
+RAYTMX_DEC bool CheckCollisionTMXTileLayersRecAll(const TmxMap* map, const TmxLayer* layers,
+    uint32_t layersLength, Rectangle rec, TmxObject* outputObjects, uint32_t* outputCount, uint32_t maxOutput) {
+    if (map == NULL || layers == NULL || layersLength == 0)
+        return false;
+
+    return CheckCollisionTMXTileLayerObjectAll(map, layers, layersLength,
+        CreateRectangularTMXObject(rec), outputObjects, outputCount, maxOutput);
+}
+
+RAYTMX_DEC TmxObject* CheckCollisionTMXTileLayersRecAllAlloc(const TmxMap* map, const TmxLayer* layers,
+    uint32_t layersLength, Rectangle rec, uint32_t* outCount) {
+    if (map == NULL || layers == NULL || layersLength == 0)
+        return NULL;
+
+    return CheckCollisionTMXTileLayerObjectAllAlloc(map, layers, layersLength, CreateRectangularTMXObject(rec), outCount);
 }
 
 /**
@@ -3958,6 +4038,125 @@ bool CheckCollisionTMXTileLayerObject(const TmxMap* map, const TmxLayer* layers,
     }
 
     return false;
+}
+
+/**
+ * Variant of CheckCollisionTMXTileLayerObject which returns all matching tile-layer objects that
+ * collide with the given object. The function is optimized to avoid dynamic allocations by allowing
+ * the caller to provide an output buffer. If the output buffer is NULL, the function will only
+ * count the number of collisions and write that count to outputCount (if non-NULL).
+ *
+ * @param map A loaded map model containing the given layers.
+ * @param layers An array of select tile layers or group layers to be checked for collisions.
+ * @param layersLength Length of the given array of tile layers.
+ * @param object A TMX <object> to be checked for collisions.
+ * @param outputObjects Optional output array that will be filled with the positioned objects that collide.
+ *                      Pass NULL to only count collisions. Each entry is a translated copy of the tile's
+ *                      collision object positioned at the tile's location.
+ * @param outputCount Optional output parameter that will be assigned the total number of collisions found.
+ * @param maxOutput The capacity of the outputObjects array. Ignored if outputObjects is NULL. If the total
+ *                  number of collisions exceeds maxOutput the function will still count all collisions but only
+ *                  fill up to maxOutput entries.
+ * @return True if at least one collision was found, false otherwise.
+ */
+bool CheckCollisionTMXTileLayerObjectAll(const TmxMap* map, const TmxLayer* layers, uint32_t layersLength,
+        TmxObject object, TmxObject* outputObjects, uint32_t* outputCount, uint32_t maxOutput) {
+    if (map == NULL || layers == NULL || layersLength == 0) {
+        if (outputCount != NULL)
+            *outputCount = 0;
+        return false;
+    }
+
+    uint32_t found = 0;
+
+    /* Iterate through each layer and check their tiles for collisions with the given object */
+    for (uint32_t i = 0; i < layersLength; i++) {
+        if (layers[i].type == LAYER_TYPE_TILE_LAYER) { /* If the layer has tiles */
+            /* Iterate through each tile that the object's Axis-Aligned Bounding Box (AABB) overlaps with */
+            TmxTile tile;
+            Rectangle tileRect;
+            while (IterateTileLayer(/* map: */ map, /* layer: */ &layers[i].exact.tileLayer,
+                    /* screenRect: */ object.aabb, /* rawGid: */ NULL, /* tile: */ &tile, /* tileRect: */ &tileRect)) {
+                /* Iterate through each object associated with the tile */
+                for (uint32_t j = 0; j < tile.objectGroup.objectsLength; j++) {
+                    /* This object, the tile's object, has a relative position so translate it to tile position */
+                    TmxObject positionedObject = TranslateObject(tile.objectGroup.objects[j], tileRect.x, tileRect.y);
+                    if (CheckCollisionTMXObjects(positionedObject, object)) {
+                        /* If caller provided a buffer and there is room, copy it in */
+                        if (outputObjects != NULL && found < maxOutput) {
+                            outputObjects[found] = positionedObject;
+                        }
+                        found += 1;
+                    }
+                }
+            }
+        } else if (layers[i].type == LAYER_TYPE_GROUP) { /* If the layer contains other layers */
+            uint32_t subCount = 0;
+            /* Recurse into groups. Use a temporary small buffer only when caller buffer exists and has room. */
+            if (outputObjects != NULL && found < maxOutput) {
+                /* We need to fill entries into the caller buffer starting at 'found'. We'll call the function
+                 * with a pointer into the remaining space so that nested hits are written directly into it.
+                 * For the maxOutput we pass the remaining capacity. */
+                CheckCollisionTMXTileLayerObjectAll(map, layers[i].layers, layers[i].layersLength, object,
+                        &outputObjects[found], &subCount, (maxOutput > found) ? (maxOutput - found) : 0);
+                found += subCount;
+            } else {
+                /* Caller didn't provide buffer or no room left: only count */
+                CheckCollisionTMXTileLayerObjectAll(map, layers[i].layers, layers[i].layersLength, object,
+                        NULL, &subCount, 0);
+                found += subCount;
+            }
+        }
+    }
+
+    if (outputCount != NULL)
+        *outputCount = found;
+
+    return found > 0;
+}
+
+/**
+ * Convenience wrapper that allocates an array large enough to hold all collisions and returns it.
+ * The returned array must be freed by the caller using MemFree().
+ *
+ * @param map A loaded map model containing the given layers.
+ * @param layers An array of select tile layers or group layers to be checked for collisions.
+ * @param layersLength Length of the given array of tile layers.
+ * @param object A TMX <object> to be checked for collisions.
+ * @param outCount Optional output parameter that will be assigned the total number of collisions found.
+ * @return Pointer to a newly allocated array of TmxObject containing all positioned collisions, or NULL if none
+ *         were found or allocation failed. Caller must free with MemFree(). If non-NULL, *outCount will contain
+ *         the number of entries in the returned array.
+ */
+TmxObject* CheckCollisionTMXTileLayerObjectAllAlloc(const TmxMap* map, const TmxLayer* layers,
+        uint32_t layersLength, TmxObject object, uint32_t* outCount) {
+    if (outCount != NULL)
+        *outCount = 0;
+
+    if (map == NULL || layers == NULL || layersLength == 0)
+        return NULL;
+
+    uint32_t total = 0;
+    /* First pass: count how many collisions exist */
+    CheckCollisionTMXTileLayerObjectAll(map, layers, layersLength, object, NULL, &total, 0);
+    if (total == 0)
+        return NULL;
+
+    /* Allocate an array to hold all collisions */
+    TmxObject* results = (TmxObject*)MemAllocZero(sizeof(TmxObject) * (size_t)total);
+    if (results == NULL) {
+        if (outCount != NULL)
+            *outCount = 0;
+        return NULL;
+    }
+
+    /* Second pass: fill the allocated array */
+    uint32_t filled = 0;
+    CheckCollisionTMXTileLayerObjectAll(map, layers, layersLength, object, results, &filled, total);
+    if (outCount != NULL)
+        *outCount = filled;
+
+    return results;
 }
 
 /**
